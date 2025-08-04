@@ -1,0 +1,189 @@
+---
+description: Desktop Agent - PC常駐型AIアシスタントプロジェクト
+globs:
+alwaysApply: false
+---
+
+# Desktop Agent
+
+PC常駐型AIアシスタント - タスク管理、スケジュール管理、身の回りのサポートを提供するインテリジェントなデスクトップエージェント
+
+## 🎯 プロジェクト概要
+
+### 目的
+- デスクトップに常駐し、ユーザーの日常業務をサポート
+- 自然言語でのタスク・スケジュール管理
+- コード実行、Web検索、ファイル操作などの多様なツール提供
+- 拡張可能なMCP（Model Context Protocol）統合
+
+### 対象ユーザー
+- 一般ユーザー（非開発者含む）
+- 日常業務の効率化を求める個人
+
+## 🛠️ 技術スタック
+
+### コア技術
+- **言語**: Python 3.11+
+- **LLM**: vLLM / Ollama（設定で切り替え）
+- **想定モデル**: Qwen3
+- **設定管理**: YAML（システム設定）+ TOML（プロンプト管理）
+- **データ永続化**: SQLite（初期実装、将来拡張対応）
+- **セキュリティ**: Docker サンドボックス
+
+### アーキテクチャ
+```
+desktop-agent/
+├── core/                    # コアエンジン
+│   ├── llm/                # LLM推論処理（独立モジュール）
+│   ├── agent/              # エージェント実行エンジン
+│   ├── tools/              # ツール管理
+│   └── mcp/                # MCP統合
+├── cli/                    # CLI インターフェース
+├── api/                    # RESTful API（将来のフロントエンド対応）
+├── config/                 # 設定ファイル
+│   ├── system.yaml         # システム設定
+│   └── prompts.toml        # プロンプトテンプレート
+├── data/                   # データ永続化
+├── sandbox/                # Docker サンドボックス設定
+└── tests/                  # テストコード
+```
+
+## 🚀 機能要件
+
+### Phase 1: CLI版（初期実装）
+- ✅ 基本的なチャット機能
+- ✅ LLM推論処理（vLLM/Ollama切り替え）
+- ✅ コード実行（Dockerサンドボックス）
+- ✅ Web検索機能
+- ✅ ファイル操作（Read任意、Write/Delete承認制）
+- ✅ 基本的なMCP統合
+- ✅ チャット履歴保存
+
+### Phase 2: 拡張機能
+- 🔄 高度なメモリー管理
+- 🔄 タスク・スケジュール管理
+- 🔄 外部サービス連携（MCP経由）
+- 🔄 プロアクティブな問いかけ機能
+
+### Phase 3: GUI版
+- 📅 React フロントエンド
+- 📅 リアルタイム通信（WebSocket）
+- 📅 ビジュアルなタスク管理UI
+
+## 🔧 設計方針
+
+### モジュラー設計
+- LLM推論処理を独立モジュールとして設計
+- CLI版とGUI版で推論処理を共用
+- プラガブルなツール・MCP統合
+
+### セキュリティ
+- Dockerサンドボックスでコード実行
+- ファイル操作の承認制御
+- 設定ファイルベースの権限管理
+
+### 拡張性
+- MCP追加の容易性
+- プロンプトテンプレートの柔軟な管理
+- 将来のメモリー機能拡張に対応した設計
+
+### 設定管理
+```yaml
+# system.yaml
+llm:
+  provider: "ollama"  # or "vllm"
+  model: "qwen3:latest"
+  endpoint: "http://localhost:11434"
+  
+mcp:
+  servers:
+    - name: "file-ops"
+      command: ["python", "-m", "mcp_file_server"]
+    - name: "web-search"
+      command: ["python", "-m", "mcp_web_search"]
+
+sandbox:
+  engine: "docker"
+  image: "python:3.11-slim"
+```
+
+```toml
+# prompts.toml
+[system]
+base = """
+You are Desktop Agent, a helpful AI assistant...
+"""
+
+[tools]
+code_execution = """
+Execute the following code in a secure sandbox...
+"""
+```
+
+## 📦 技術的実装詳細
+
+### LLM統合
+- OpenAI互換APIインターフェース
+- vLLM: 高性能推論サーバー
+- Ollama: ローカル実行（低スペック対応）
+
+### MCP統合
+- GitHub MCP Serverパターンを参考
+- 設定ファイルベースのMCPサーバー管理
+- プラガブルアーキテクチャ
+
+### サンドボックス実行
+- Docker コンテナでの隔離実行
+- ファイルマウント制御
+- 実行時間・リソース制限
+
+## 🎯 開発マイルストーン
+
+### Week 1-2: 基盤構築
+- プロジェクト構造作成
+- LLM推論エンジン実装
+- 基本的なCLI実装
+
+### Week 3-4: ツール統合
+- コード実行サンドボックス
+- Web検索機能
+- ファイル操作機能
+
+### Week 5-6: MCP統合
+- MCP統合フレームワーク
+- 既存MCPサーバー連携
+- 設定管理システム
+
+### Week 7-8: 最適化・テスト
+- パフォーマンス最適化
+- セキュリティ検証
+- テストコード作成
+
+## 🔍 参考実装
+
+### Smolagents参考要素
+- CodeAgent のコード実行パターン
+- ツールチェーン管理
+- セキュアな実行環境
+
+### GitHub MCP Server参考要素
+- MCP統合アーキテクチャ
+- 設定ファイル管理
+- プラガブル設計
+
+## 🌟 将来的な拡張計画
+
+### 高度なメモリー管理
+- 長期記憶・短期記憶の分離
+- コンテキスト圧縮
+- 関連性ベースの情報検索
+
+### プロアクティブ機能
+- 時間ベースの自動問いかけ
+- タスク進捗の自動追跡
+- スケジュール連携
+
+### 外部連携
+- Google Workspace連携
+- Slack/Discord連携
+- IoTデバイス連携
