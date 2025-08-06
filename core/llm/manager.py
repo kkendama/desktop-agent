@@ -87,11 +87,11 @@ class LLMManager:
         
         Args:
             messages: List of messages for the conversation
-            stream: Whether to stream the response (currently returns complete response)
+            stream: Whether to stream the response (returns complete response)
             **kwargs: Additional generation parameters
             
         Returns:
-            LLM response
+            LLM response (non-streaming mode only)
         """
         await self.ensure_initialized()
         
@@ -112,6 +112,40 @@ class LLMManager:
                 content="".join(content_parts),
                 finished=True
             )
+    
+    async def generate_stream(
+        self,
+        messages: List[LLMMessage],
+        **kwargs
+    ):
+        """
+        Generate streaming response using the configured LLM engine.
+        
+        Args:
+            messages: List of messages for the conversation
+            **kwargs: Additional generation parameters
+            
+        Yields:
+            LLMResponse chunks for streaming
+        """
+        await self.ensure_initialized()
+        
+        if not self.engine:
+            raise RuntimeError("LLM engine not initialized")
+        
+        try:
+            response = await self.engine.generate(messages, stream=True, **kwargs)
+            
+            if isinstance(response, LLMResponse):
+                # Non-streaming response, yield as single chunk
+                yield response
+            else:
+                # Streaming response, yield each chunk
+                async for chunk in response:
+                    yield chunk
+        except Exception as e:
+            # Wrap engine-specific errors with context
+            raise RuntimeError(f"Streaming generation failed with {self.config.provider}: {str(e)}") from e
     
     async def generate_single(
         self,

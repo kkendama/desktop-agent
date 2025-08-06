@@ -40,6 +40,7 @@ class DesktopAgentCLI:
         self.tool_executor = ToolExecutor(self.mcp_manager)
         self.conversation_history = []
         self.running = False
+        self.streaming_enabled = True  # Enable streaming by default
     
     async def initialize(self) -> bool:
         """Initialize the CLI application."""
@@ -105,6 +106,7 @@ class DesktopAgentCLI:
 - `/mcp` - Show MCP status and management
 - `/tools` - List available MCP tools
 - `/approvals` - Show pending approval requests
+- `/stream` - Toggle streaming mode on/off
 - Any other input will be sent to the AI agent
 
 **Tips:**
@@ -112,6 +114,7 @@ class DesktopAgentCLI:
 - The agent can help with code execution, web search, file operations, and more
 - MCP servers provide extended functionality through tools and resources
 - Type your questions or requests and press Enter
+- Streaming mode provides real-time response updates
         """
         
         help_panel = Panel(
@@ -136,6 +139,7 @@ class DesktopAgentCLI:
 **Provider:** {provider_info.get('provider', 'Unknown')}
 **Model:** {provider_info.get('model', 'Unknown')}
 **Endpoint:** {provider_info.get('endpoint', 'Unknown')}
+**Streaming Mode:** {'🟢 Enabled' if self.streaming_enabled else '🔴 Disabled'}
 **Conversation Messages:** {len(self.conversation_history)}
 **Available Providers:** {', '.join(self.llm_manager.list_available_providers())}
 
@@ -153,7 +157,7 @@ class DesktopAgentCLI:
         
         self.console.print(status_panel)
     
-    async def handle_user_input(self, user_input: str):
+    async def handle_user_input(self, user_input: str, use_streaming: bool = True):
         """Handle user input and generate response."""
         # Add user message to history
         user_message = LLMMessage(role="user", content=user_input)
@@ -178,7 +182,126 @@ class DesktopAgentCLI:
         recent_history = self.conversation_history[-max_history:]
         messages.extend(recent_history)
         
-        # Generate response with tool execution loop
+        if use_streaming:
+            await self._handle_streaming_response(messages)
+        else:
+            await self._handle_non_streaming_response(messages)
+    
+    async def _handle_streaming_response(self, messages):
+        """Handle streaming response generation with tool execution loop."""
+        max_tool_iterations = 5  # Prevent infinite loops
+        iteration = 0
+        
+        while iteration < max_tool_iterations:
+            # Generate streaming response
+            status_text = "[bold green]Thinking..." if iteration == 0 else f"[bold green]Processing tools (iteration {iteration})..."
+            
+            try:
+                # Show initial status
+                self.console.print(f"\n{status_text}")
+                
+                # Create a panel for streaming output
+                accumulated_content = ""
+                response_panel = Panel(
+                    "",
+                    title="🤖 Desktop Agent",
+                    border_style="blue"
+                )
+                
+                # Stream the response
+                with Live(response_panel, console=self.console, refresh_per_second=10) as live:
+                    async for chunk in self.llm_manager.generate_stream(messages):
+                        if chunk.content:
+                            accumulated_content += chunk.content
+                            # Update the live panel
+                            updated_panel = Panel(
+                                Markdown(accumulated_content),
+                                title="🤖 Desktop Agent",
+                                border_style="blue"
+                            )
+                            live.update(updated_panel)
+                        
+                        # Check if this is the final chunk
+                        if chunk.finished:
+                            # Display usage info if available
+                            if chunk.usage:
+                                live.stop()
+                                self._display_usage_info(chunk.usage)
+                            break
+                
+                # Check if response contains tool calls
+                if self.tool_executor.has_tool_calls(accumulated_content):
+                    self.console.print(f"[dim]DEBUG - Found tool calls in iteration {iteration}[/dim]")
+                    
+                    # Execute tools and get results
+                    tool_results, cleaned_content = await self.tool_executor.execute_tools_in_text(accumulated_content)
+                    
+                    # Add assistant message with cleaned content (without tool_use tags)
+                    if cleaned_content.strip():
+                        assistant_message = LLMMessage(role="assistant", content=cleaned_content)
+                        self.conversation_history.append(assistant_message)
+                        messages.append(assistant_message)
+                    
+                    # Add tool results to conversation history and messages
+                    for tool_result in tool_results:
+                        function_message = LLMMessage(
+                            role="tool",
+                            content=tool_result.content if tool_result.success else f"Error: {tool_result.error}",
+                            name=tool_result.name
+                        )
+                        self.conversation_history.append(function_message)
+                        messages.append(function_message)
+                    
+                    # Continue loop for next iteration
+                    iteration += 1
+                    continue
+                else:
+                    # No tool calls, this is the final response
+                    assistant_message = LLMMessage(role="assistant", content=accumulated_content)
+                    self.conversation_history.append(assistant_message)
+                    
+                    # Exit loop
+                    break
+            
+            except asyncio.CancelledError:
+                # Handle cancellation gracefully
+                self.console.print("\n[yellow]Streaming cancelled by user.[/yellow]")
+                break
+            except Exception as e:
+                # Log the detailed error for debugging
+                import traceback
+                error_details = traceback.format_exc()
+                
+                error_panel = Panel(
+                    f"[red]Error generating streaming response: {str(e)}[/red]\n[dim]Use `/stream` to toggle to non-streaming mode if this persists.[/dim]",
+                    title="❌ Streaming Error",
+                    border_style="red"
+                )
+                self.console.print(error_panel)
+                
+                # Optionally print debug info
+                self.console.print(f"[dim]Debug info: {error_details[:300]}...[/dim]")
+                
+                # Try to fallback to non-streaming for this response
+                try:
+                    self.console.print("[yellow]Attempting fallback to non-streaming mode...[/yellow]")
+                    await self._handle_non_streaming_response(messages)
+                    break
+                except Exception as fallback_error:
+                    self.console.print(f"[red]Fallback also failed: {fallback_error}[/red]")
+                    break
+        
+        # Check if we hit max iterations
+        if iteration >= max_tool_iterations:
+            warning_panel = Panel(
+                f"[yellow]Tool execution reached maximum iterations ({max_tool_iterations}). Stopping to prevent infinite loops.[/yellow]",
+                title="⚠️ Warning",
+                border_style="yellow"
+            )
+            self.console.print(warning_panel)
+    
+    async def _handle_non_streaming_response(self, messages):
+        """Handle non-streaming response generation (fallback mode)."""
         max_tool_iterations = 5  # Prevent infinite loops
         iteration = 0
         
@@ -216,8 +339,6 @@ class DesktopAgentCLI:
                             )
                             self.conversation_history.append(function_message)
                             messages.append(function_message)
-                            
-
                         
                         # Continue loop for next iteration
                         iteration += 1
@@ -302,7 +423,7 @@ class DesktopAgentCLI:
                     await self.handle_command(user_input)
                 else:
                     # Handle normal conversation
-                    await self.handle_user_input(user_input)
+                    await self.handle_user_input(user_input, use_streaming=self.streaming_enabled)
                 
                 self.console.print()  # Add spacing
                 
@@ -350,6 +471,11 @@ class DesktopAgentCLI:
         
         elif command == '/approvals':
             await self.display_pending_approvals()
+        
+        elif command == '/stream':
+            self.streaming_enabled = not self.streaming_enabled
+            status = "enabled" if self.streaming_enabled else "disabled"
+            self.console.print(f"[green]Streaming mode {status}.[/green]")
         
         else:
             self.console.print(f"[yellow]Unknown command: {command}[/yellow]")
