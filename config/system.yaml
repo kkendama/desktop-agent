@@ -1,0 +1,159 @@
+# Desktop Agent System Configuration
+
+# LLM Configuration
+llm:
+  provider: "vllm"  # options: "ollama", "vllm"
+  model: "qwen/qwen3-30b-a3b-2507"
+  endpoint: "http://172.30.144.1:1234"
+  temperature: 0.7
+  max_tokens: 4096
+  timeout: 60
+  
+  # vLLM specific settings (when provider is "vllm")
+  vllm:
+    api_key: null
+    served_model_name: null
+  
+  # Ollama specific settings (when provider is "ollama")
+  ollama:
+    keep_alive: "5m"
+
+# MCP (Model Context Protocol) Configuration
+mcp:
+  enabled: true
+  servers:
+    - name: "time"
+      description: "Time and timezone functionality"
+      command: ["uvx", "mcp-server-time"]
+      env: {}
+      permissions:
+        read: true
+      tools:
+        - type: "function"
+          function:
+            name: "get_current_time"
+            description: "Get current time in a specific timezone"
+            parameters:
+              type: "object"
+              properties:
+                timezone:
+                  type: "string"
+                  description: "IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Use 'Asia/Tokyo' as local timezone if no timezone provided by the user."
+              required: ["timezone"]
+        - type: "function"
+          function:
+            name: "convert_time"
+            description: "Convert time between timezones"
+            parameters:
+              type: "object"
+              properties:
+                source_timezone:
+                  type: "string"
+                  description: "Source IANA timezone name (e.g., 'America/New_York', 'Europe/London'). Use 'Asia/Tokyo' as local timezone if no source timezone provided by the user."
+                time:
+                  type: "string"
+                  description: "Time to convert in 24-hour format (HH:MM)"
+                target_timezone:
+                  type: "string"
+                  description: "Target IANA timezone name (e.g., 'Asia/Tokyo', 'America/San_Francisco'). Use 'Asia/Tokyo' as local timezone if no target timezone provided by the user."
+              required: ["source_timezone", "time", "target_timezone"]
+    
+    - name: "web-fetch"
+      description: "Web requests and fetch functionality"
+      command: ["uvx", "mcp-server-fetch"]
+      env: {}
+      permissions:
+        read: true
+      tools:
+        - type: "function"
+          function:
+            name: "fetch"
+            description: "Fetches a URL from the internet and optionally extracts its contents as markdown"
+            parameters:
+              type: "object"
+              properties:
+                url:
+                  type: "string"
+                  description: "URL to fetch"
+                  format: "uri"
+                max_length:
+                  type: "integer"
+                  description: "Maximum number of characters to return"
+                  default: 5000
+                start_index:
+                  type: "integer"
+                  description: "On return output starting at this character index, useful if a previous fetch was truncated and more context is required"
+                  default: 0
+                raw:
+                  type: "boolean"
+                  description: "Get the actual HTML content of the requested page, without simplification"
+                  default: false
+              required: ["url"]
+
+# Sandbox Configuration
+sandbox:
+  engine: "docker"
+  image: "python:3.11-slim"
+  timeout: 30
+  memory_limit: "512m"
+  cpu_limit: "1.0"
+  network: false
+  volumes:
+    - type: "tmpfs"
+      source: "/tmp"
+      target: "/workspace"
+      options: "rw,noexec,nosuid,size=100m"
+
+# Security Configuration
+security:
+  file_operations:
+    require_approval: true
+    allowed_extensions: [".txt", ".md", ".json", ".yaml", ".toml", ".py", ".js", ".html", ".css"]
+    blocked_paths: ["~/.ssh", "/etc", "/var", "/sys", "/proc"]
+  
+  code_execution:
+    sandbox_only: true
+    max_execution_time: 30
+    max_output_lines: 100
+
+# Data Storage
+storage:
+  type: "sqlite"
+  path: "data/desktop_agent.db"
+  backup:
+    enabled: true
+    interval: "24h"
+    max_backups: 7
+
+# Chat Configuration
+chat:
+  max_history: 100
+  context_window: 8192
+  memory:
+    enabled: true
+    short_term_limit: 50
+    long_term_compression: true
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "data/logs/desktop_agent.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# CLI Configuration
+cli:
+  prompt: "Desktop Agent> "
+  colors: true
+  auto_complete: true
+  history_file: "data/.cli_history"
+
+# API Configuration (for future frontend)
+api:
+  enabled: false
+  host: "localhost"
+  port: 8000
+  cors:
+    enabled: true
+    origins: ["http://localhost:3000"]
