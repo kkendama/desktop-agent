@@ -1,0 +1,52 @@
+# Qwen3 Chat Template Configuration
+name: "qwen3"
+description: "Qwen3 Chat Template with <|im_start|> and <|im_end|> tokens"
+model_family: "qwen3"
+
+# Template format
+format:
+  # System message template
+  system: "<|im_start|>system\n{content}<|im_end|>\n"
+  
+  # User message template
+  user: "<|im_start|>user\n{content}<|im_end|>\n"
+  
+  # Assistant message template  
+  assistant: "<|im_start|>assistant\n{content}<|im_end|>\n"
+  
+  # Function message template (for tool calls)
+  function: "<|im_start|>function\n{content}<|im_end|>\n"
+  
+  # Generation prompt (what's added to start assistant response)
+  generation_prompt: "<|im_start|>assistant\n"
+
+# Stop tokens
+stop_tokens:
+  - "<|im_end|>"
+  - "<|endoftext|>"
+
+# Default settings
+defaults:
+  system_message: "You are a helpful assistant."
+  add_generation_prompt: true
+  
+# Completion mode settings for tool/code continuation
+completion:
+  # Whether this template supports completion mode
+  enabled: true
+  
+  # Template for completion (when continuing from partial assistant response)
+  # This allows continuing generation after tool/code execution results
+  continue_template: "{partial_content}"
+  
+  # Tokens that indicate completion should stop
+  completion_stop_tokens:
+    - "<|im_end|>"
+    - "\n\n"  # Stop on double newline to avoid over-generation
+
+# Compatible models (regex patterns)
+compatible_models:
+  - ".*qwen3.*"
+  - ".*Qwen3.*"
+  - "qwen3-.*"
+  - "Qwen3-.*"

@@ -1,0 +1,36 @@
+# OpenAI Compatible Chat Template Configuration
+name: "openai"
+description: "OpenAI compatible chat template (standard format)"
+model_family: "openai"
+
+# Template format - OpenAI uses direct role-content format
+format:
+  # Messages are formatted as JSON-like structure for API calls
+  # This template doesn't use string formatting, but structured messages
+  system: null  # Will be handled as structured message
+  user: null    # Will be handled as structured message  
+  assistant: null  # Will be handled as structured message
+  function: null   # Will be handled as structured message
+  
+  # No generation prompt needed for API calls
+  generation_prompt: ""
+
+# Stop tokens (API handles this automatically)
+stop_tokens: []
+
+# Default settings
+defaults:
+  system_message: "You are a helpful assistant."
+  add_generation_prompt: false
+  
+# Completion mode settings
+completion:
+  enabled: true
+  continue_template: "{partial_content}"
+  completion_stop_tokens: []
+
+# Compatible models
+compatible_models:
+  - "gpt-.*"
+  - ".*openai.*"
+  - "claude-.*"

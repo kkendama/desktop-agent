@@ -6,7 +6,7 @@ import json
 import asyncio
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import httpx
-from .base import BaseLLMEngine, LLMConfig, LLMMessage, LLMResponse, LLMEngineFactory
+from .base import BaseLLMEngine, LLMConfig, LLMMessage, LLMResponse, CompletionRequest, LLMEngineFactory
 
 
 class OllamaEngine(BaseLLMEngine):
@@ -142,6 +142,116 @@ class OllamaEngine(BaseLLMEngine):
         except Exception as e:
             raise RuntimeError(f"Ollama streaming failed: {e}")
     
+    async def completion(
+        self,
+        request: CompletionRequest,
+        **kwargs
+    ) -> LLMResponse | AsyncGenerator[LLMResponse, None]:
+        """
+        Generate completion using Ollama generate API.
+        
+        Args:
+            request: Completion request parameters
+            **kwargs: Additional generation parameters
+            
+        Returns:
+            LLMResponse for non-streaming, AsyncGenerator for streaming
+        """
+        await self.ensure_initialized()
+        
+        # Build completion payload for Ollama's generate API
+        payload = {
+            "model": self.config.model,
+            "prompt": request.prompt,
+            "stream": request.stream,
+            "options": {
+                "temperature": request.temperature or self.config.temperature,
+                "num_predict": request.max_tokens or self.config.max_tokens,
+            }
+        }
+        
+        if request.stop:
+            payload["options"]["stop"] = request.stop
+        
+        # Add any additional options
+        if kwargs:
+            payload["options"].update(kwargs)
+        
+        # Add provider-specific options
+        if self.config.provider_config:
+            payload["options"].update(self.config.provider_config.get("options", {}))
+        
+        if request.stream:
+            return self._stream_completion(payload)
+        else:
+            return await self._single_completion(payload)
+    
+    async def _single_completion(self, payload: Dict[str, Any]) -> LLMResponse:
+        """Generate a single completion response."""
+        try:
+            response = await self.client.post("/api/generate", json=payload)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            return LLMResponse(
+                content=result.get("response", ""),
+                usage={
+                    "prompt_eval_count": result.get("prompt_eval_count", 0),
+                    "eval_count": result.get("eval_count", 0),
+                    "total_duration": result.get("total_duration", 0),
+                },
+                metadata={
+                    "model": result.get("model"),
+                    "created_at": result.get("created_at"),
+                    "done": result.get("done", True),
+                },
+                finished=True
+            )
+            
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Ollama completion API error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Ollama completion failed: {e}")
+    
+    async def _stream_completion(self, payload: Dict[str, Any]) -> AsyncGenerator[LLMResponse, None]:
+        """Generate streaming completion responses."""
+        try:
+            async with self.client.stream("POST", "/api/generate", json=payload) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        try:
+                            chunk = json.loads(line)
+                            
+                            content = chunk.get("response", "")
+                            done = chunk.get("done", False)
+                            
+                            yield LLMResponse(
+                                content=content,
+                                usage={
+                                    "prompt_eval_count": chunk.get("prompt_eval_count", 0),
+                                    "eval_count": chunk.get("eval_count", 0),
+                                } if done else None,
+                                metadata={
+                                    "model": chunk.get("model"),
+                                    "created_at": chunk.get("created_at"),
+                                },
+                                finished=done
+                            )
+                            
+                            if done:
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
+                            
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Ollama completion streaming error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"Ollama completion streaming failed: {e}")
+
     async def close(self):
         """Close the HTTP client."""
         if self.client:

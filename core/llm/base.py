@@ -24,6 +24,15 @@ class LLMResponse(BaseModel):
     finished: bool = True
 
 
+class CompletionRequest(BaseModel):
+    """Request format for completion API."""
+    prompt: str
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    stop: Optional[List[str]] = None
+    stream: bool = False
+
+
 class LLMConfig(BaseModel):
     """Configuration for LLM engines."""
     provider: str  # "ollama" or "vllm"
@@ -72,6 +81,24 @@ class BaseLLMEngine(ABC):
     @abstractmethod
     async def health_check(self) -> bool:
         """Check if the LLM engine is healthy and responsive."""
+        pass
+    
+    @abstractmethod
+    async def completion(
+        self,
+        request: CompletionRequest,
+        **kwargs
+    ) -> LLMResponse | AsyncGenerator[LLMResponse, None]:
+        """
+        Generate completion from a prompt (text completion API).
+        
+        Args:
+            request: Completion request parameters
+            **kwargs: Additional generation parameters
+            
+        Returns:
+            LLMResponse for non-streaming, AsyncGenerator for streaming
+        """
         pass
     
     async def ensure_initialized(self):

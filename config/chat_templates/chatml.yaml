@@ -1,0 +1,43 @@
+# ChatML Standard Chat Template Configuration
+name: "chatml"
+description: "ChatML standard format with <|im_start|> and <|im_end|> tokens"
+model_family: "chatml"
+
+# Template format
+format:
+  # System message template
+  system: "<|im_start|>system\n{content}<|im_end|>\n"
+  
+  # User message template
+  user: "<|im_start|>user\n{content}<|im_end|>\n"
+  
+  # Assistant message template  
+  assistant: "<|im_start|>assistant\n{content}<|im_end|>\n"
+  
+  # Function message template (for tool calls)
+  function: "<|im_start|>function\n{content}<|im_end|>\n"
+  
+  # Generation prompt
+  generation_prompt: "<|im_start|>assistant\n"
+
+# Stop tokens
+stop_tokens:
+  - "<|im_end|>"
+
+# Default settings
+defaults:
+  system_message: "You are a helpful assistant."
+  add_generation_prompt: true
+  
+# Completion mode settings
+completion:
+  enabled: true
+  continue_template: "{partial_content}"
+  completion_stop_tokens:
+    - "<|im_end|>"
+    - "\n\n"
+
+# Compatible models
+compatible_models:
+  - ".*chatml.*"
+  - ".*ChatML.*"

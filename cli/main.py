@@ -23,8 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.config import ConfigManager
 from core.llm.manager import LLMManager
 from core.llm.base import LLMMessage
+from core.llm.continuation import ContinuationManager
 from core.mcp import MCPIntegration
 from core.tool_executor import ToolExecutor
+from core.code_executor import CodeExecutor
 from core.mcp.manager import MCPServerManager
 
 
@@ -35,9 +37,11 @@ class DesktopAgentCLI:
         self.console = Console()
         self.config_manager = ConfigManager()
         self.llm_manager = LLMManager()
+        self.continuation_manager = None  # Will be initialized after LLM manager
         self.mcp_integration = MCPIntegration()
         self.mcp_manager = MCPServerManager()
         self.tool_executor = ToolExecutor(self.mcp_manager)
+        self.code_executor = None  # Will be initialized after config is loaded
         self.conversation_history = []
         self.running = False
         self.streaming_enabled = True  # Enable streaming by default
@@ -52,6 +56,9 @@ class DesktopAgentCLI:
             
             # Initialize LLM manager
             await self.llm_manager.initialize()
+            
+            # Initialize continuation manager
+            self.continuation_manager = ContinuationManager(self.llm_manager)
             
             # Test LLM connection
             if not await self.llm_manager.health_check():
@@ -70,6 +77,11 @@ class DesktopAgentCLI:
                 await self.mcp_manager.start_all_servers()
             else:
                 self.console.print("[yellow]MCP server manager failed to initialize (continuing without MCP servers).[/yellow]")
+            
+            # Initialize Code Executor with sandbox configuration
+            sandbox_config = self.config_manager.get_sandbox_config()
+            self.code_executor = CodeExecutor(sandbox_config)
+            self.console.print("[green]Code executor initialized successfully.[/green]")
             
             return True
             
@@ -213,6 +225,13 @@ class DesktopAgentCLI:
                     async for chunk in self.llm_manager.generate_stream(messages):
                         if chunk.content:
                             accumulated_content += chunk.content
+                            
+                            # Check for completed code blocks and execute them
+                            if self.code_executor and "</code>" in accumulated_content:
+                                modified_content, code_executed = await self.code_executor.extract_and_execute_completed_code_async(accumulated_content)
+                                if code_executed:
+                                    accumulated_content = modified_content
+                            
                             # Update the live panel
                             updated_panel = Panel(
                                 Markdown(accumulated_content),
@@ -229,10 +248,15 @@ class DesktopAgentCLI:
                                 self._display_usage_info(chunk.usage)
                             break
                 
-                # Check if response contains tool calls
+                # Check for code execution continuation after streaming ends
+                if self.code_executor and "</code_output>" in accumulated_content:
+                    # Check if we should continue generation after code execution
+                    continuation_result = await self._handle_code_continuation(messages, accumulated_content)
+                    if continuation_result:
+                        accumulated_content = continuation_result
+                
+                # Process only tool calls (not code execution, as that's handled during streaming)
                 if self.tool_executor.has_tool_calls(accumulated_content):
-                    self.console.print(f"[dim]DEBUG - Found tool calls in iteration {iteration}[/dim]")
-                    
                     # Execute tools and get results
                     tool_results, cleaned_content = await self.tool_executor.execute_tools_in_text(accumulated_content)
                     
@@ -317,30 +341,12 @@ class DesktopAgentCLI:
                     self.console.print(f"[dim]DEBUG - Iteration {iteration}: LLM Response:[/dim]")
                     self.console.print(f"[dim]{response.content[:200]}...[/dim]")
                     
-                    # Check if response contains tool calls
-                    if self.tool_executor.has_tool_calls(response.content):
-                        self.console.print(f"[dim]DEBUG - Found tool calls in iteration {iteration}[/dim]")
-                        
-                        # Execute tools and get results
-                        tool_results, cleaned_content = await self.tool_executor.execute_tools_in_text(response.content)
-                        
-                        # Add assistant message with cleaned content (without tool_use tags)
-                        if cleaned_content.strip():
-                            assistant_message = LLMMessage(role="assistant", content=cleaned_content)
-                            self.conversation_history.append(assistant_message)
-                            messages.append(assistant_message)
-                        
-                        # Add tool results to conversation history and messages
-                        for tool_result in tool_results:
-                            function_message = LLMMessage(
-                                role="tool",
-                                content=tool_result.content if tool_result.success else f"Error: {tool_result.error}",
-                                name=tool_result.name
-                            )
-                            self.conversation_history.append(function_message)
-                            messages.append(function_message)
-                        
+                    # Process tools and code execution
+                    processed_content, has_executable_content = await self._process_executable_content(response.content, iteration)
+                    
+                    if has_executable_content:
                         # Continue loop for next iteration
+                        messages.extend(processed_content)
                         iteration += 1
                         continue
                     else:
@@ -380,6 +386,60 @@ class DesktopAgentCLI:
                 border_style="yellow"
             )
             self.console.print(warning_panel)
+    
+    async def _process_executable_content(self, content: str, iteration: int):
+        """
+        Process both tool calls and code blocks in the content.
+        
+        Returns:
+            Tuple of (processed_messages, has_executable_content)
+        """
+        processed_messages = []
+        has_executable_content = False
+        
+        # First, process code blocks
+        if self.code_executor and self.code_executor.has_code_blocks(content):
+            self.console.print(f"[dim]DEBUG - Found code blocks in iteration {iteration}[/dim]")
+            
+            # Execute code blocks and get results with modified content
+            code_results, content_after_code = await self.code_executor.execute_code_blocks_in_text(content)
+            content = content_after_code  # Update content with execution results
+            
+            # We consider code execution as executable content but don't add separate messages
+            # The results are already integrated into the content
+            has_executable_content = True
+        
+        # Then, process tool calls
+        if self.tool_executor.has_tool_calls(content):
+            self.console.print(f"[dim]DEBUG - Found tool calls in iteration {iteration}[/dim]")
+            
+            # Execute tools and get results
+            tool_results, cleaned_content = await self.tool_executor.execute_tools_in_text(content)
+            
+            # Add assistant message with cleaned content (without tool_use tags)
+            if cleaned_content.strip():
+                assistant_message = LLMMessage(role="assistant", content=cleaned_content)
+                self.conversation_history.append(assistant_message)
+                processed_messages.append(assistant_message)
+            
+            # Add tool results to conversation history and messages
+            for tool_result in tool_results:
+                function_message = LLMMessage(
+                    role="tool",
+                    content=tool_result.content if tool_result.success else f"Error: {tool_result.error}",
+                    name=tool_result.name
+                )
+                self.conversation_history.append(function_message)
+                processed_messages.append(function_message)
+            
+            has_executable_content = True
+        elif has_executable_content:
+            # Only code blocks were executed, add the modified content as assistant message
+            assistant_message = LLMMessage(role="assistant", content=content)
+            self.conversation_history.append(assistant_message)
+            processed_messages.append(assistant_message)
+        
+        return processed_messages, has_executable_content
     
     def _display_usage_info(self, usage: dict):
         """Display usage information."""
@@ -582,6 +642,119 @@ Future versions will support manual approval workflows.
         )
         
         self.console.print(approvals_panel)
+    
+    async def _handle_code_continuation(self, messages, content_with_code_output):
+        """
+        Handle continuation generation after code execution.
+        
+        Args:
+            messages: Current conversation messages
+            content_with_code_output: Assistant content including <code_output>
+            
+        Returns:
+            Extended content with continuation, or None if no continuation needed
+        """
+        try:
+            # Check if continuation is supported
+            if not self.continuation_manager or not self.continuation_manager.supports_continuation():
+                return None
+            
+            # Extract code and output for continuation
+            import re
+            
+            # Find the last code block and its output
+            code_pattern = r'<code>\s*```python\s*(.*?)\s*```\s*</code>'
+            output_pattern = r'<code_output>\s*(.*?)\s*</code_output>'
+            
+            code_matches = list(re.finditer(code_pattern, content_with_code_output, re.DOTALL))
+            output_matches = list(re.finditer(output_pattern, content_with_code_output, re.DOTALL))
+            
+            if not code_matches or not output_matches:
+                return None
+            
+            # Get the last code and output
+            last_code = code_matches[-1].group(1).strip()
+            last_output = output_matches[-1].group(1).strip()
+            
+            # Check if the content contains </code_output> (indicating code was executed)
+            if '</code_output>' not in content_with_code_output:
+                return None
+            
+            # Show subtle continuation status
+            self.console.print("[dim]...[/dim]", end="")
+            
+            # Generate continuation
+            continuation_response = await self.continuation_manager.continue_with_code_result(
+                conversation_messages=messages,
+                partial_assistant_response=content_with_code_output,
+                code=last_code,
+                code_output=last_output,
+                max_continuation_tokens=300,  # Limit continuation length
+                stream=False
+            )
+            
+            # Display the continuation
+            if continuation_response and continuation_response.content != content_with_code_output:
+                # Extract only the new content (after the original)
+                if continuation_response.content.startswith(content_with_code_output):
+                    new_content = continuation_response.content[len(content_with_code_output):]
+                    if new_content.strip():
+                        # Clean up the new content formatting
+                        cleaned_new_content = self._clean_continuation_content(new_content)
+                        
+                        if cleaned_new_content:
+                            # Display the continuation seamlessly (without showing it's a continuation)
+                            self.console.print(Markdown(cleaned_new_content))
+                            
+                            # Display usage info if available
+                            if continuation_response.usage:
+                                self._display_usage_info(continuation_response.usage)
+                        
+                        return continuation_response.content
+            
+            return None
+            
+        except Exception as e:
+            self.console.print(f"[yellow]Warning: Code continuation failed: {e}[/yellow]")
+            return None
+    
+    def _clean_continuation_content(self, content: str) -> str:
+        """
+        Clean up continuation content for better display.
+        
+        Args:
+            content: Raw continuation content
+            
+        Returns:
+            Cleaned content for display
+        """
+        # Remove leading/trailing whitespace
+        content = content.strip()
+        
+        # Remove redundant "Code Execution Output:" sections since we already showed the output
+        import re
+        
+        # Remove patterns like "**Code Execution Output:**\n```\noutput\n```\n"
+        content = re.sub(r'\*\*Code Execution Output:\*\*\s*\n```[^`]*?```\s*\n?', '', content)
+        
+        # Remove patterns like "Code Execution Output:\noutput"
+        content = re.sub(r'Code Execution Output:\s*\n[^\n]*\n?', '', content)
+        
+        # Remove any remaining **Code Execution Output:** patterns
+        content = re.sub(r'\*\*Code Execution Output:\*\*[^\n]*\n?', '', content)
+        
+        # Remove excessive newlines
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        
+        # Clean up the start of the content
+        content = content.lstrip('\n')
+        
+        # If content starts with just a summary or answer, make it more natural
+        if content and not content.startswith(('**', '#', '-', '*')):
+            # Add a small separator for natural flow
+            content = '\n' + content
+        
+        return content.strip()
 
 
 @click.command()

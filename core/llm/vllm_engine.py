@@ -5,7 +5,7 @@ vLLM LLM engine implementation.
 import json
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import httpx
-from .base import BaseLLMEngine, LLMConfig, LLMMessage, LLMResponse, LLMEngineFactory
+from .base import BaseLLMEngine, LLMConfig, LLMMessage, LLMResponse, CompletionRequest, LLMEngineFactory
 
 
 class VLLMEngine(BaseLLMEngine):
@@ -187,6 +187,134 @@ class VLLMEngine(BaseLLMEngine):
         except Exception as e:
             raise RuntimeError(f"vLLM streaming failed: {e}")
     
+    async def completion(
+        self,
+        request: CompletionRequest,
+        **kwargs
+    ) -> LLMResponse | AsyncGenerator[LLMResponse, None]:
+        """
+        Generate completion using vLLM completions API.
+        
+        Args:
+            request: Completion request parameters
+            **kwargs: Additional generation parameters
+            
+        Returns:
+            LLMResponse for non-streaming, AsyncGenerator for streaming
+        """
+        await self.ensure_initialized()
+        
+        # Build completion payload
+        payload = {
+            "model": self.served_model_name or self.config.model,
+            "prompt": request.prompt,
+            "max_tokens": request.max_tokens or self.config.max_tokens,
+            "temperature": request.temperature or self.config.temperature,
+            "stream": request.stream,
+        }
+        
+        if request.stop:
+            payload["stop"] = request.stop
+        
+        # Add any additional parameters
+        payload.update(kwargs)
+        
+        if request.stream:
+            return self._stream_completion(payload)
+        else:
+            return await self._single_completion(payload)
+    
+    async def _single_completion(self, payload: Dict[str, Any]) -> LLMResponse:
+        """Generate a single completion response."""
+        try:
+            response = await self.client.post("/v1/completions", json=payload)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Extract response content
+            choices = result.get("choices", [])
+            if not choices:
+                raise RuntimeError("No choices returned from vLLM completion")
+            
+            text = choices[0].get("text", "")
+            
+            # Extract usage information
+            usage = result.get("usage", {})
+            
+            return LLMResponse(
+                content=text,
+                usage={
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+                metadata={
+                    "model": result.get("model"),
+                    "created": result.get("created"),
+                    "finish_reason": choices[0].get("finish_reason"),
+                },
+                finished=True
+            )
+            
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"vLLM completion API error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"vLLM completion failed: {e}")
+    
+    async def _stream_completion(self, payload: Dict[str, Any]) -> AsyncGenerator[LLMResponse, None]:
+        """Generate streaming completion responses."""
+        try:
+            async with self.client.stream("POST", "/v1/completions", json=payload) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    
+                    # Skip empty lines and non-data lines
+                    if not line or not line.startswith("data: "):
+                        continue
+                    
+                    # Remove "data: " prefix
+                    data = line[6:]
+                    
+                    # Check for end of stream
+                    if data == "[DONE]":
+                        break
+                    
+                    try:
+                        chunk = json.loads(data)
+                        
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        
+                        text = choices[0].get("text", "")
+                        finish_reason = choices[0].get("finish_reason")
+                        
+                        # Yield the chunk
+                        yield LLMResponse(
+                            content=text,
+                            usage=chunk.get("usage"),
+                            metadata={
+                                "model": chunk.get("model"),
+                                "created": chunk.get("created"),
+                                "finish_reason": finish_reason,
+                            },
+                            finished=finish_reason is not None
+                        )
+                        
+                        if finish_reason:
+                            break
+                            
+                    except json.JSONDecodeError:
+                        continue
+                        
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"vLLM completion streaming error: {e.response.status_code} - {e.response.text}")
+        except Exception as e:
+            raise RuntimeError(f"vLLM completion streaming failed: {e}")
+
     async def close(self):
         """Close the HTTP client."""
         if self.client:
